@@ -7,18 +7,31 @@ import (
 	"fmt"
 	"io/ioutil"
 	"log"
-	"os"
 	"net/http"
+	"os"
 	"regexp"
 	"strings"
+	"time"
+
 	"github.com/mafredri/cdp"
+	"github.com/mafredri/cdp/devtool"
+	"github.com/mafredri/cdp/protocol/network"
 	"github.com/mafredri/cdp/rpcc"
 	"github.com/tebeka/selenium"
 )
 
-// DevToolsResponse is used to parse the response from the Chrome DevTools protocol.
+// DevToolsResponse is used to parse the response from the Chrome DevTools protocol
 type DevToolsResponse struct {
 	WebSocketDebuggerURL string `json:"webSocketDebuggerURL"`
+}
+
+// GraphQLCapture represents a captured GraphQL request/response pair
+type GraphQLCapture struct {
+	Query     string                 `json:"query"`
+	Variables map[string]interface{} `json:"variables,omitempty"`
+	Response  interface{}            `json:"response,omitempty"`
+	Timestamp time.Time             `json:"timestamp"`
+	URL       string                `json:"url"`
 }
 
 // Setup Selenium WebDriver using the locally running ChromeDriver and DevTools Protocol
@@ -30,9 +43,8 @@ func setupSelenium() (selenium.WebDriver, func(), *cdp.Client, error) {
 		"browserName": "chrome",
 		"goog:chromeOptions": map[string]interface{}{
 			"args": []string{
-				//"--headless", 
-				"--disable-gpu", 
-				"--no-sandbox", 
+				"--disable-gpu",
+				"--no-sandbox",
 				"--remote-debugging-port=9222",
 			},
 		},
@@ -45,31 +57,21 @@ func setupSelenium() (selenium.WebDriver, func(), *cdp.Client, error) {
 	}
 	log.Println("Selenium session started.")
 
-	// Fetch the WebSocket URL from the DevTools endpoint
-	resp, err := http.Get("http://localhost:9222/json")
+	// Create a new Chrome DevTools Protocol client
+	devt := devtool.New("http://localhost:9222")
+	pt, err := devt.Get(context.Background(), devtool.Page)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("failed to get DevTools WebSocket URL: %v", err)
-	}
-	defer resp.Body.Close()
-
-	body, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		return nil, nil, nil, fmt.Errorf("failed to read response: %v", err)
+		pt, err = devt.Create(context.Background())
+		if err != nil {
+			return nil, nil, nil, err
+		}
 	}
 
-	// Parse the JSON response
-	var devTools []DevToolsResponse
-	err = json.Unmarshal(body, &devTools)
-	if err != nil || len(devTools) == 0 {
-		return nil, nil, nil, fmt.Errorf("failed to parse DevTools response: %v", err)
-	}
-
-	// Connect to Chrome DevTools Protocol (CDP)
-	conn, err := rpcc.DialContext(context.Background(), devTools[0].WebSocketDebuggerURL)
+	// Connect to Chrome DevTools Protocol
+	conn, err := rpcc.DialContext(context.Background(), pt.WebSocketDebuggerURL)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("failed to connect to Chrome DevTools: %v", err)
+		return nil, nil, nil, err
 	}
-	log.Println("Connected to Chrome DevTools Protocol.")
 
 	client := cdp.NewClient(conn)
 	return wd, func() {
@@ -79,8 +81,8 @@ func setupSelenium() (selenium.WebDriver, func(), *cdp.Client, error) {
 	}, client, nil
 }
 
-// Capture all network requests to identify JavaScript files
-func captureNetworkTraffic(client *cdp.Client, jsURLs chan string) error {
+// Capture all network requests to identify JavaScript files and GraphQL requests
+func captureNetworkTraffic(client *cdp.Client, jsURLs chan string, gqlCaptures chan GraphQLCapture) error {
 	ctx := context.Background()
 
 	// Enable network events
@@ -88,10 +90,15 @@ func captureNetworkTraffic(client *cdp.Client, jsURLs chan string) error {
 		return fmt.Errorf("failed to enable network tracking: %v", err)
 	}
 
-	// Create a subscription to the ResponseReceived events
+	// Create subscriptions for network events
 	responseStream, err := client.Network.ResponseReceived(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to subscribe to network responses: %v", err)
+	}
+
+	requestStream, err := client.Network.RequestWillBeSent(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to subscribe to network requests: %v", err)
 	}
 
 	log.Println("Started capturing network traffic.")
@@ -99,23 +106,128 @@ func captureNetworkTraffic(client *cdp.Client, jsURLs chan string) error {
 	// Process network events in a separate goroutine
 	go func() {
 		defer close(jsURLs)
-		for {
-			// Read the next response event
-			responseEvent, err := responseStream.Recv()
-			if err != nil {
-				log.Printf("Error receiving network response: %v", err)
-				break
-			}
+		defer close(gqlCaptures)
 
-			// If the response URL ends with ".js", capture it
-			if strings.HasSuffix(responseEvent.Response.URL, ".js") {
-				log.Printf("JavaScript file detected: %s", responseEvent.Response.URL)
-				jsURLs <- responseEvent.Response.URL
+		// Map to store request data temporarily
+		requests := make(map[network.RequestID]*network.Request)
+
+		for {
+			select {
+			case req, ok := <-requestStream.Ready():
+				if !ok {
+					return
+				}
+				
+				// Store request data
+				requests[req.RequestID] = req.Request
+
+				// Check if it's a potential GraphQL request
+				if isGraphQLRequest(req.Request) {
+					capture := GraphQLCapture{
+						Query:     extractQueryFromRequest(req.Request),
+						Variables: extractVariablesFromRequest(req.Request),
+						Timestamp: time.Now(),
+						URL:       req.Request.URL,
+					}
+					
+					if capture.Query != "" {
+						gqlCaptures <- capture
+					}
+				}
+
+			case resp, ok := <-responseStream.Ready():
+				if !ok {
+					return
+				}
+
+				// Handle JavaScript files
+				if strings.HasSuffix(resp.Response.URL, ".js") {
+					jsURLs <- resp.Response.URL
+				}
+
+				// Handle GraphQL responses
+				req, exists := requests[resp.RequestID]
+				if exists && isGraphQLRequest(req) {
+					responseBody, err := client.Network.GetResponseBody(ctx, &network.GetResponseBodyArgs{
+						RequestID: resp.RequestID,
+					})
+					if err == nil && responseBody.Body != "" {
+						var responseData interface{}
+						if err := json.Unmarshal([]byte(responseBody.Body), &responseData); err == nil {
+							capture := GraphQLCapture{
+								Query:     extractQueryFromRequest(req),
+								Variables: extractVariablesFromRequest(req),
+								Response:  responseData,
+								Timestamp: time.Now(),
+								URL:       resp.Response.URL,
+							}
+							
+							if capture.Query != "" {
+								gqlCaptures <- capture
+							}
+						}
+					}
+				}
+
+				// Cleanup request data
+				delete(requests, resp.RequestID)
 			}
 		}
 	}()
 
 	return nil
+}
+
+// Helper functions for GraphQL request handling
+func isGraphQLRequest(req *network.Request) bool {
+	// Check URL path
+	if strings.Contains(strings.ToLower(req.URL), "graphql") {
+		return true
+	}
+
+	// Check Content-Type header
+	if strings.Contains(strings.ToLower(req.Headers["Content-Type"]), "application/graphql") {
+		return true
+	}
+
+	// Check request body for GraphQL keywords
+	if req.PostData != nil {
+		return strings.Contains(*req.PostData, "query") || strings.Contains(*req.PostData, "mutation")
+	}
+
+	return false
+}
+
+func extractQueryFromRequest(req *network.Request) string {
+	if req.PostData == nil {
+		return ""
+	}
+
+	var requestData struct {
+		Query string `json:"query"`
+	}
+
+	if err := json.Unmarshal([]byte(*req.PostData), &requestData); err != nil {
+		return ""
+	}
+
+	return requestData.Query
+}
+
+func extractVariablesFromRequest(req *network.Request) map[string]interface{} {
+	if req.PostData == nil {
+		return nil
+	}
+
+	var requestData struct {
+		Variables map[string]interface{} `json:"variables"`
+	}
+
+	if err := json.Unmarshal([]byte(*req.PostData), &requestData); err != nil {
+		return nil
+	}
+
+	return requestData.Variables
 }
 
 // Download and save JavaScript content
@@ -137,51 +249,119 @@ func downloadJS(jsURL string) (string, error) {
 
 // Extract GQL queries and mutations from JS content using refined regex
 func extractGraphQL(content string) ([]string, error) {
-	//print logging meddage
 	log.Println("Extracting GraphQL queries and mutations from JS content.")
-	// Define refined regex patterns to extract queries and mutations
 	queryPattern := regexp.MustCompile(`(?s)query\s+[a-zA-Z0-9_]+\s*\([^\)]*\)\s*\{[^}]+\}`)
 	mutationPattern := regexp.MustCompile(`(?s)mutation\s+[a-zA-Z0-9_]+\s*\([^\)]*\)\s*\{[^}]+\}`)
 
-	// Find all queries and mutations
 	queries := queryPattern.FindAllString(content, -1)
 	mutations := mutationPattern.FindAllString(content, -1)
 
-	// Combine both results into a single slice
 	return append(queries, mutations...), nil
 }
 
-// Save extracted GQL queries and mutations to a file, appending content instead of overwriting
-func saveToFile(content []string, fileName string) error {
-	if len(content) == 0 {
-		log.Println("No GraphQL queries or mutations found.")
-		return nil
+// Format GraphQL query with proper indentation and spacing
+func formatGraphQLQuery(query string) string {
+	query = strings.TrimSpace(query)
+	indent := 0
+	var formatted strings.Builder
+
+	lines := strings.Split(query, "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+
+		if strings.HasPrefix(line, "}") {
+			indent--
+		}
+
+		formatted.WriteString(strings.Repeat("  ", indent))
+		formatted.WriteString(line)
+		formatted.WriteString("\n")
+
+		if strings.HasSuffix(line, "{") {
+			indent++
+		}
+
+		if strings.HasSuffix(line, "}") && !strings.HasPrefix(line, "}") {
+			indent--
+		}
 	}
 
-	// Open the file in append mode, create if not exists
+	return formatted.String()
+}
+
+// Save extracted GQL queries and mutations to a file
+func saveToFile(content []string, captures []GraphQLCapture, fileName string) error {
 	f, err := os.OpenFile(fileName, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		return fmt.Errorf("failed to open file for appending: %v", err)
 	}
 	defer f.Close()
 
-	// Join the content and write to the file
-	_, err = f.WriteString(strings.Join(content, "\n\n") + "\n\n")
-	if err != nil {
-		return fmt.Errorf("failed to write to file: %v", err)
+	// Write static queries found in JS files
+	for _, query := range content {
+		formattedQuery := formatGraphQLQuery(query)
+		_, err = f.WriteString(fmt.Sprintf("\n# Static Query found at: %s\n", time.Now().Format(time.RFC3339)))
+		if err != nil {
+			return fmt.Errorf("failed to write static query: %v", err)
+		}
+		
+		_, err = f.WriteString(formattedQuery + "\n\n# " + strings.Repeat("-", 50) + "\n\n")
+		if err != nil {
+			return fmt.Errorf("failed to write formatted query: %v", err)
+		}
 	}
 
-	log.Printf("Appended %d GraphQL queries/mutations to file: %s", len(content), fileName)
+	// Write captured network queries
+	for _, capture := range captures {
+		_, err = f.WriteString(fmt.Sprintf("\n# GraphQL Network Capture at: %s\n", capture.Timestamp.Format(time.RFC3339)))
+		if err != nil {
+			return fmt.Errorf("failed to write capture timestamp: %v", err)
+		}
+
+		_, err = f.WriteString(fmt.Sprintf("# URL: %s\n", capture.URL))
+		if err != nil {
+			return fmt.Errorf("failed to write capture URL: %v", err)
+		}
+
+		formattedQuery := formatGraphQLQuery(capture.Query)
+		_, err = f.WriteString(fmt.Sprintf("\n# Query:\n%s\n", formattedQuery))
+		if err != nil {
+			return fmt.Errorf("failed to write capture query: %v", err)
+		}
+
+		if len(capture.Variables) > 0 {
+			variablesJSON, _ := json.MarshalIndent(capture.Variables, "", "  ")
+			_, err = f.WriteString(fmt.Sprintf("\n# Variables:\n%s\n", string(variablesJSON)))
+			if err != nil {
+				return fmt.Errorf("failed to write capture variables: %v", err)
+			}
+		}
+
+		if capture.Response != nil {
+			responseJSON, _ := json.MarshalIndent(capture.Response, "", "  ")
+			_, err = f.WriteString(fmt.Sprintf("\n# Response:\n%s\n", string(responseJSON)))
+			if err != nil {
+				return fmt.Errorf("failed to write capture response: %v", err)
+			}
+		}
+
+		_, err = f.WriteString("\n# " + strings.Repeat("-", 50) + "\n\n")
+		if err != nil {
+			return fmt.Errorf("failed to write separator: %v", err)
+		}
+	}
+
 	return nil
 }
 
 func sanitizeDomain(domain string) string {
-	// Remove special characters that could cause issues in filenames
 	return strings.ReplaceAll(strings.ReplaceAll(domain, "https://", ""), "/", "_")
 }
 
 func main() {
-	// Command-line flag for the target domain
 	domain := flag.String("domain", "", "Target domain to extract GraphQL queries from")
 	flag.Parse()
 
@@ -189,56 +369,59 @@ func main() {
 		log.Fatalf("No domain provided. Please specify a target domain using --domain.")
 	}
 
-	// Setup Selenium WebDriver and CDP connection
 	wd, cleanup, client, err := setupSelenium()
 	if err != nil {
 		log.Fatalf("Error setting up Selenium: %v", err)
 	}
 	defer cleanup()
 
-	// Start capturing JavaScript URLs through network traffic
 	jsURLs := make(chan string)
-	err = captureNetworkTraffic(client, jsURLs)
+	gqlCaptures := make(chan GraphQLCapture)
+	var captures []GraphQLCapture
+
+	err = captureNetworkTraffic(client, jsURLs, gqlCaptures)
 	if err != nil {
 		log.Fatalf("Error capturing network traffic: %v", err)
 	}
 
-	// Load the target page
+	// Start a goroutine to collect captures
+	go func() {
+		for capture := range gqlCaptures {
+			captures = append(captures, capture)
+		}
+	}()
+
 	log.Printf("Navigating to: %s", *domain)
 	err = wd.Get(*domain)
 	if err != nil {
 		log.Fatalf("Error loading the page: %v", err)
 	}
 
-	// Create a dynamic output filename based on the domain name
 	sanitizedDomain := sanitizeDomain(*domain)
 	outputFileName := fmt.Sprintf("graphql_queries_mutations_%s.graphql", sanitizedDomain)
 
-	// Process JavaScript URLs
+	var extractedQueries []string
+
 	log.Println("Processing JavaScript URLs.")
 	for jsURL := range jsURLs {
-		// Download JS content
 		jsContent, err := downloadJS(jsURL)
 		if err != nil {
 			log.Printf("Error downloading JS from %s: %v", jsURL, err)
 			continue
 		}
 
-		// Extract GraphQL queries and mutations
-		extractedGQL, err := extractGraphQL(jsContent)
+		queries, err := extractGraphQL(jsContent)
 		if err != nil {
 			log.Printf("Error extracting GQL from %s: %v", jsURL, err)
 			continue
 		}
 
-		// Save the extracted GQL queries and mutations to a file
-		if len(extractedGQL) > 0 {
-			err = saveToFile(extractedGQL, outputFileName)
-			if err != nil {
-				log.Printf("Error saving extracted GQL to file: %v", err)
-			}
-		}
+		extractedQueries = append(extractedQueries, queries...)
 	}
 
-	log.Println("Finished processing all JavaScript URLs.")
+	if err := saveToFile(extractedQueries, captures, outputFileName); err != nil {
+		log.Printf("Error saving to file: %v", err)
+	}
+
+	log.Println("Finished processing all JavaScript URLs and network captures.")
 }
