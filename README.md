@@ -12,65 +12,77 @@ A dynamic GraphQL query and mutation extraction tool that captures queries from 
 ## Prerequisites
 
 - Go
-- Chrome/Chromium browser
-- ChromeDriver matching your Chrome version
-- Required Go packages:
-  - github.com/mafredri/cdp
-  - github.com/mafredri/cdp/rpcc
-  - github.com/tebeka/selenium
+- Chrome/Chromium browser (version 132.0.6834.83 or compatible)
 
-## Installation
+## Quick Start
 
-1. Clone the repository
-2. Install dependencies:
+1. Clone the repository:
 ```bash
-go get github.com/mafredri/cdp
-go get github.com/mafredri/cdp/rpcc
-go get github.com/tebeka/selenium
+git clone https://github.com/yourusername/gql-extractor
+cd gql-extractor
 ```
 
-3. Download ChromeDriver for your platform matching your Chrome version from:
-   https://sites.google.com/chromium.org/driver/
-
-## Setup
-
-1. Start ChromeDriver with the required ports:
+2. Build and setup:
 ```bash
-./chromedriver --port=4444 --remote-debugging-port=9222
+make all
 ```
 
-2. Build the tool:
+3. Run the tool:
 ```bash
-go build -o gql-extractor
+make run DOMAIN="https://example.com"
 ```
 
-## Usage
-
-1. Start the tool with a target domain:
-```bash
-./gql-extractor --domain="https://example.com"
-```
-
-2. When the browser opens:
+4. When the browser opens:
    - Perform any required authentication
    - Navigate through the application as needed
    - The tool will automatically capture GraphQL queries from loaded JS files
 
-3. Extracted queries will be saved to: `graphql_queries_mutations_domain_name.graphql`
 
 ## Output
 
-The tool generates a .graphql file containing all unique queries and mutations found in the loaded JavaScript files. The filename is automatically generated based on the target domain:
+The tool generates a `.graphql` file containing all unique queries and mutations found in the loaded JavaScript files. The filename is automatically generated based on the target domain:
 ```
 graphql_queries_mutations_example.com.graphql
 ```
 
-## Notes
+## Project Structure
+```
+.
+├── Makefile             # Build and automation scripts
+├── go.mod               # Go module definition
+├── go.sum               # Go module checksums
+├── main.go              # Main application code
+└── bin/                 # Built binaries and ChromeDriver
+    ├── gql-extractor
+    └── chromedriver/
+```
 
-- The tool opens a visible Chrome instance to allow for user interaction
-- Queries are extracted using regex pattern matching for both queries and mutations
-- Results are appended to the output file, allowing for multiple runs
-- JavaScript files are processed as they are loaded during the browsing session
+## Make Commands
+
+- `make all`: Install dependencies, build the tool, and download ChromeDriver
+- `make build`: Build the Go binary
+- `make deps`: Install Go dependencies
+- `make run DOMAIN="https://example.com"`: Run the tool against a specific domain
+- `make stop`: Stop the ChromeDriver process
+- `make clean`: Remove built binaries and downloads
+
+## Manual Build
+
+If you prefer to build manually:
+
+1. Initialize Go modules:
+```bash
+go mod init
+go mod tidy
+```
+
+2. Build the binary:
+```bash
+go build -o bin/gql-extractor
+```
+
+3. Download the appropriate ChromeDriver version from:
+   https://storage.googleapis.com/chrome-for-testing-public/132.0.6834.83/
 
 ## Limitations
 
@@ -79,6 +91,26 @@ graphql_queries_mutations_example.com.graphql
 - Only extracts queries from loaded JavaScript files
 - Does not handle minified/obfuscated JavaScript optimally
 
+## Troubleshooting
+
+1. ChromeDriver version mismatch:
+   - Ensure Chrome browser version matches ChromeDriver version (132.0.6834.83)
+   - Update CHROMEDRIVER_VERSION in Makefile if needed
+
+2. Port conflicts:
+   - Default ports used: 4444 (ChromeDriver) and 9222 (DevTools)
+   - Ensure these ports are available or modify in main.go
+
+3. Permission issues:
+   - On Unix systems, ensure chromedriver is executable:
+   ```bash
+   chmod +x bin/chromedriver/chromedriver-*/chromedriver
+   ```
+
 ## Contributing
 
-Feel free to submit issues and enhancement requests.
+1. Fork the repository
+2. Create a feature branch
+3. Commit your changes
+4. Push to the branch
+5. Create a Pull Request
