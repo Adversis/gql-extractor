@@ -1,6 +1,6 @@
 # GraphQL Query Extractor
 
-<img width="400" style="text-align: center" alt="Screenshot 2025-01-20 at 10 51 50 AM" src="https://github.com/user-attachments/assets/bc5031e7-5838-479c-a1bc-759052762683" />
+<img width="400" align="center" alt="Screenshot 2025-01-20 at 10 51 50 AM" src="https://github.com/user-attachments/assets/bc5031e7-5838-479c-a1bc-759052762683" />
 
 A dynamic GraphQL query and mutation extraction tool that captures queries from JavaScript files loaded during browser sessions. The tool supports authenticated sessions and real-time extraction of GraphQL operations as JavaScript files are loaded.
 
