@@ -1,0 +1,83 @@
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.log
+
+# Go build output
+bin/
+gql-extractor
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool
+*.out
+
+# Go workspace file
+go.work
+go.work.sum
+
+# Dependency directories
+vendor/
+
+# ChromeDriver files
+chromedriver*
+!bin/chromedriver/.gitkeep
+
+# Log files
+*.log
+chromedriver.log
+chromedriver.pid
+
+# IDE specific files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Output folder for extracted GraphQL data
+output/
+
+# Claude AI files
+.claude
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.temp
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Debug files
+debug
+debug.test
+*.pprof
+
+# OS generated files
+Thumbs.db
+.DS_Store
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Desktop.ini
+
+# Backup files
+*.bak
+*.backup
+*~
+
+# Archives
+*.zip
+*.tar.gz
+*.tgz
+*.rar
