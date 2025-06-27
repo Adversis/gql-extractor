@@ -12,12 +12,9 @@ A tool that extracts GraphQL queries and mutations from web applications by anal
 - Real-time progress tracking with detailed statistics
 - Network traffic monitoring for GraphQL requests
 - JavaScript file analysis for embedded queries
-- Configurable timeouts and progress intervals
 - Support for authenticated sessions through browser interaction
-- **Automatic deduplication of GraphQL operations**
-- **Multiple output formats: SDL (.graphql), JSON, and detailed logs**
-- **Operation signature and variable extraction**
-- **Type inference from captured responses**
+- Automatic deduplication of GraphQL operations
+- Multiple output formats: SDL (.graphql), JSON, and detailed logs
 
 ## Prerequisites
 
@@ -42,7 +39,6 @@ The tool will automatically:
 - Detect your Chrome version
 - Download the matching ChromeDriver
 - Start the extraction process
-- Show progress updates every 10 seconds
 - Continue processing new JavaScript files as you browse
 - Save results when you close the browser
 
@@ -163,21 +159,6 @@ make logs               # View ChromeDriver logs
 make help               # Show all commands
 ```
 
-## Project Structure
-
-```
-.
-├── capture.go          # Main extraction logic
-├── parser.go          # GraphQL parsing and export functionality
-├── Makefile           # Build automation
-├── go.mod            # Go dependencies
-├── .gitignore        # Git ignore rules
-├── output/            # Extracted GraphQL data (gitignored)
-└── bin/              # Build output
-    ├── gql-extractor
-    └── chromedriver/
-```
-
 ## How It Works
 
 1. **Browser Automation**: Uses Selenium WebDriver to control Chrome
@@ -219,11 +200,3 @@ make check-ports    # Check port status
 - Requires manual interaction for authenticated areas
 - Only captures queries from loaded resources
 - May not work with heavily obfuscated code
-
-## Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Run tests: `go test ./...`
-5. Submit a pull request
